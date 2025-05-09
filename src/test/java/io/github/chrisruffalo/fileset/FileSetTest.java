@@ -1,6 +1,7 @@
 package io.github.chrisruffalo.fileset;
 
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -59,6 +60,35 @@ class FileSetTest {
     void thousandAdd() throws IOException {
         final Path source = Paths.get("src/test/resources/top-1000-domains.txt");
         final Path backing = Paths.get("target/tests/thousand-add-backing.txt");
+        Files.createDirectories(backing.getParent());
+
+        final FileSet fileSet = new FileSet(backing);
+        try(BufferedReader reader = Files.newBufferedReader(source)) {
+            reader.lines().forEach(line -> {
+                try {
+                    fileSet.add(line);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+
+        fileSet.sort();
+
+        Assertions.assertEquals(-1, fileSet.search("notinfile"));
+
+        try(BufferedReader reader = Files.newBufferedReader(source)) {
+            reader.lines().forEach(line -> {
+                Assertions.assertNotEquals(-1, fileSet.search(line), () -> String.format("could not find line %s", line));
+            });
+        }
+    }
+
+    @Test
+    @Disabled // until we find a way to speed this up
+    void millionAdd() throws IOException {
+        final Path source = Paths.get("src/test/resources/top-1m-domains.txt");
+        final Path backing = Paths.get("target/tests/million-add-backing.txt");
         Files.createDirectories(backing.getParent());
 
         final FileSet fileSet = new FileSet(backing);
