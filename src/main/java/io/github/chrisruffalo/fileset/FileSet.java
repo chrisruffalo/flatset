@@ -1,20 +1,20 @@
 package io.github.chrisruffalo.fileset;
 
-import java.io.BufferedOutputStream;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
-import java.util.NoSuchElementException;
-import java.util.concurrent.ConcurrentLinkedDeque;
 
 public class FileSet {
+
+    static final int INITIAL_RECORD_SIZE = 20;
+    static final int RECORD_SIZE_EXPANSION_AMOUNT = 4;
+    private static final int BUFFER_SIZE = 1024 * 32; //32K
 
     final Path backing;
     MappedByteBuffer mmap;
@@ -22,65 +22,92 @@ public class FileSet {
     long entries;
     int recordSize;
 
-    private final ThreadLocal<byte[]> threadBufferPool = new ThreadLocal<>();
+    final ThreadLocal<byte[]> pool = new ThreadLocal<>();
 
     public FileSet(Path backing) {
         this.backing = backing;
-    }
-
-    public long load(final Path path) throws IOException {
-        byte[] buffer = new byte[8192];
-        int currentRecordSize = 0;
-
-        // First pass: determine record size
-        try (final FileInputStream fis = new FileInputStream(path.toFile())) {
-            int read;
-            while ((read = fis.read(buffer)) != -1) {
-                for (int i = 0; i < read; i++) {
-                    if (buffer[i] == '\n') {
-                        recordSize = Math.max(recordSize, currentRecordSize);
-                        currentRecordSize = 0;
-                    } else {
-                        currentRecordSize++;
-                    }
-                }
+        this.recordSize = INITIAL_RECORD_SIZE;
+        if (Files.exists(backing)) {
+            try {
+                Files.deleteIfExists(backing);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
         }
 
-        // Second pass: convert to fixed-width format
+        if (!Files.exists(backing.getParent())) {
+            try {
+                Files.createDirectories(backing);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    public long load(final Path path) throws IOException {
+        this.recordSize = 32; // Start with default
         this.entries = 0;
+
+        byte[] buffer = new byte[BUFFER_SIZE];
+        ByteBuffer lineBuffer = ByteBuffer.allocateDirect(recordSize);
+        int lineLength = 0;
+
         try (
-            final InputStream fis = Files.newInputStream(path);
-            final OutputStream out = new BufferedOutputStream(Files.newOutputStream(this.backing))
+                InputStream fis = Files.newInputStream(path);
+                FileChannel out = FileChannel.open(backing,
+                        StandardOpenOption.READ,
+                        StandardOpenOption.WRITE,
+                        StandardOpenOption.CREATE)
         ) {
             int read;
-            int linePos = 0;
-            byte[] lineBuffer = new byte[recordSize];
+            long fileOffset = 0;
 
             while ((read = fis.read(buffer)) != -1) {
                 for (int i = 0; i < read; i++) {
                     byte b = buffer[i];
+
                     if (b == '\n') {
-                        for (int j = linePos; j < recordSize; j++) {
-                            lineBuffer[j] = ' ';
+                        // Pad with spaces
+                        while (lineLength < recordSize) {
+                            lineBuffer.put((byte)0);
+                            lineLength++;
                         }
-                        out.write(lineBuffer, 0, recordSize);
+
+                        lineBuffer.flip(); // Switch to reading mode
+                        out.position(fileOffset);
+                        out.write(lineBuffer);
+                        fileOffset += recordSize;
+
+                        lineBuffer.clear();
+                        lineLength = 0;
                         entries++;
-                        linePos = 0;
                     } else if (b != '\r') {
-                        if (linePos < recordSize) {
-                            lineBuffer[linePos++] = b;
+                        if (lineLength == lineBuffer.capacity()) {
+                            // Resize logic
+                            int newRecordSize = nextRecordSize(recordSize + 1);
+                            recordSize = resizeFileSet(out, newRecordSize);
+                            ByteBuffer newBuffer = ByteBuffer.allocateDirect(recordSize);
+                            lineBuffer.flip(); // Prepare to read from old
+                            newBuffer.put(lineBuffer); // Copy contents
+                            lineBuffer = newBuffer;
+                            fileOffset = entries * recordSize; // need to adjust the fileOffset to match the previous projected record
                         }
+                        lineBuffer.put(b);
+                        lineLength++;
                     }
                 }
             }
 
-            // Final line
-            if (linePos > 0) {
-                for (int j = linePos; j < recordSize; j++) {
-                    lineBuffer[j] = ' ';
+            // Write last line if missing newline
+            if (lineLength > 0) {
+                while (lineLength < recordSize) {
+                    lineBuffer.put((byte)0);
+                    lineLength++;
                 }
-                out.write(lineBuffer, 0, recordSize);
+
+                lineBuffer.flip();
+                out.position(fileOffset);
+                out.write(lineBuffer);
                 entries++;
             }
         }
@@ -88,20 +115,87 @@ public class FileSet {
         return entries;
     }
 
-    public void sort() throws IOException {
-        // Memory map the backing file
-        try (FileChannel channel = FileChannel.open(backing, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+    public void add(String value) throws IOException {
+        int newRecordSize = value.length();
+
+        try (FileChannel channel = FileChannel.open(backing, StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+            if (newRecordSize > recordSize) {
+                recordSize = resizeFileSet(channel, nextRecordSize(newRecordSize));
+            }
+
+            long pos = entries * recordSize;
+            if (pos + recordSize > channel.size()) {
+                channel.truncate(pos + recordSize);
+            }
+
+            channel.position(pos);
+
+            byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+            byte[] record = new byte[recordSize];
+            System.arraycopy(bytes, 0, record, 0, newRecordSize);
+            for (int i = newRecordSize; i < recordSize; i++) {
+                record[i] = 0;
+            }
+            channel.write(java.nio.ByteBuffer.wrap(record));
+            entries++;
             mmap = channel.map(FileChannel.MapMode.READ_WRITE, 0, channel.size());
+        }
+    }
+
+    private int resizeFileSet(FileChannel channel, int newRecordSize) throws IOException {
+        //long oldSize = entries * recordSize;
+        long newSize = entries * newRecordSize;
+
+        channel.truncate(newSize); // Resize the file to new size
+        channel.position(newSize - 1);
+        //channel.write(java.nio.ByteBuffer.wrap(new byte[]{0}));
+
+        // Map the file to memory with the new size
+        final MappedByteBuffer map = channel.map(FileChannel.MapMode.READ_WRITE, 0, newSize);
+
+        byte[] buffer = new byte[recordSize];
+
+        // Copy data from old position to new position
+        for (long i = entries - 1; i >= 0; i--) {
+            long oldPos = i * recordSize;
+            long newPos = i * newRecordSize;
+
+            map.position((int) oldPos);
+            map.get(buffer, 0, recordSize);
+
+            map.position((int) newPos);
+            map.put(buffer, 0, recordSize);
+            for (int j = recordSize; j < newRecordSize; j++) {
+                map.put((byte) 0);
+            }
+        }
+
+        return newRecordSize;
+    }
+
+    static int nextRecordSize(int value) {
+        if (value < INITIAL_RECORD_SIZE) {
+            return INITIAL_RECORD_SIZE;
+        }
+        return value + RECORD_SIZE_EXPANSION_AMOUNT;
+    }
+
+    public void sort() throws IOException {
+        // need at least 2 entries to sort
+        if (entries < 2) {
+            return;
+        }
+
+        try (FileChannel channel = FileChannel.open(backing, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            mmap = channel.map(FileChannel.MapMode.READ_WRITE, 0, recordSize * entries);
 
             byte[] a = new byte[recordSize];
             byte[] b = new byte[recordSize];
 
-            // Heapify the array
             for (long i = entries / 2 - 1; i >= 0; i--) {
                 siftDown(a, b, i, entries - 1);
             }
 
-            // Sort the heap
             for (long end = entries - 1; end > 0; end--) {
                 swap(a, b, 0, end);
                 siftDown(a, b, 0, end - 1);
@@ -115,58 +209,96 @@ public class FileSet {
             long child = root * 2 + 1;
             long swap = root;
 
-            if (compare(a, b, child, swap) > 0) {
+            read(this.mmap, child, a);
+            read(this.mmap, swap, b);
+
+            if (compare(a, b) > 0) {
                 swap = child;
+                read(this.mmap, swap, b);
             }
-            if (child + 1 <= end && compare(a, b, child + 1, swap) > 0) {
-                swap = child + 1;
+
+            child += 1;
+            if (child <= end) {
+                read(this.mmap, child, a);
+                if (compare(a, b) > 0) {
+                    swap = child;
+                    read(this.mmap, swap, b);
+                }
             }
 
             if (swap == root) {
                 return;
             } else {
-                swap(a, b, root, swap);
+                if (root != child) {
+                    read(this.mmap, root, a);
+                }
+                write(this.mmap, root, b);
+                write(this.mmap, swap, a);
                 root = swap;
             }
         }
     }
 
-    private int compare(byte[] a, byte[] b, long i, long j) throws IOException {
-        read(i, a);
-        read(j, b);
-        return Arrays.compareUnsigned(a, 0, recordSize, b, 0, recordSize);
+    private int compare(byte[] a, byte[] b) {
+        for (int k = 0; k < recordSize; k++) {
+            int cmp = (a[k] & 0xFF) - (b[k] & 0xFF);
+            if (cmp != 0) return cmp;
+        }
+        return 0;
     }
 
     private void swap(byte[] a, byte[] b, long i, long j) throws IOException {
         if (i == j) return;
-        read(i, a);
-        read(j, b);
-        write(i, b);
-        write(j, a);
+        read(this.mmap, i, a);
+        read(this.mmap, j, b);
+        write(this.mmap, i, b);
+        write(this.mmap, j, a);
     }
 
-    private void read(long recordIndex, byte[] buffer) {
+    private void read(MappedByteBuffer source, long recordIndex, byte[] buffer) {
         int pos = (int) (recordIndex * recordSize);
-        mmap.position(pos);
-        mmap.get(buffer, 0, recordSize);
+        source.position(pos);
+        source.get(buffer, 0, recordSize);
     }
 
-    private void write(long recordIndex, byte[] buffer) {
+    private void write(MappedByteBuffer source, long recordIndex, byte[] buffer) {
         int pos = (int) (recordIndex * recordSize);
-        mmap.position(pos);
-        mmap.put(buffer, 0, recordSize);
+        source.position(pos);
+        source.put(buffer, 0, recordSize);
+    }
+
+    private synchronized MappedByteBuffer getMmap() {
+        if (mmap == null) {
+            try (FileChannel channel = FileChannel.open(backing, StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)) {
+                mmap = channel.map(FileChannel.MapMode.READ_WRITE, 0, recordSize * entries);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        return mmap;
     }
 
     public long search(String query) {
+        // can't find anything in an empty list
+        if (entries < 1) {
+            return -1;
+        }
+
+        // if the length of the query is greater
+        // than that of every record it can't be
+        // contained in the set
         if (query.length() > recordSize) {
             return -1;
         }
 
-        // get an element from the queue
-        byte[] buffer = threadBufferPool.get();
-        if (buffer == null) {
+        // doing this keeps it _reasonably_ thread safe
+        // but i'm not entirely sure
+        final MappedByteBuffer map = getMmap().duplicate();
+
+        byte[] buffer = pool.get();
+        if (buffer == null || buffer.length < recordSize) {
             buffer = new byte[recordSize];
-            threadBufferPool.set(buffer);
+            pool.set(buffer);
         }
 
         long low = 0;
@@ -174,7 +306,7 @@ public class FileSet {
 
         while (low <= high) {
             long mid = (low + high) >>> 1;
-            read(mid, buffer);
+            read(map, mid, buffer);
 
             int cmp = compareRecordToQuery(buffer, query);
             if (cmp > 0) {
@@ -201,7 +333,7 @@ public class FileSet {
             }
         }
 
-        if (queryLength < recordSize && record[queryLength] != ' ') {
+        if (queryLength < recordSize && record[queryLength] != 0) {
             return -1;
         }
 
