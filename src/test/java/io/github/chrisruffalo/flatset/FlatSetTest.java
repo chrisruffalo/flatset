@@ -1,4 +1,4 @@
-package io.github.chrisruffalo.fileset;
+package io.github.chrisruffalo.flatset;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
@@ -10,12 +10,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-class FileSetTest {
+class FlatSetTest {
 
     @Test
     void nextRecordSize() {
-        Assertions.assertEquals(FileSet.INITIAL_RECORD_SIZE, FileSet.nextRecordSize(0));
-        Assertions.assertEquals(FileSet.INITIAL_RECORD_SIZE + FileSet.RECORD_SIZE_EXPANSION_AMOUNT, FileSet.nextRecordSize(FileSet.INITIAL_RECORD_SIZE) );
+        Assertions.assertEquals(FlatSet.INITIAL_RECORD_SIZE, FlatSet.nextRecordSize(0));
+        Assertions.assertEquals(FlatSet.INITIAL_RECORD_SIZE + FlatSet.RECORD_SIZE_EXPANSION_AMOUNT, FlatSet.nextRecordSize(FlatSet.INITIAL_RECORD_SIZE) );
     }
 
     @Test
@@ -24,15 +24,15 @@ class FileSetTest {
         final Path backing = Paths.get("target/tests/thousand-backing.txt");
         Files.createDirectories(backing.getParent());
 
-        final FileSet fileSet = new FileSet(backing);
-        fileSet.load(source);
-        fileSet.sort();
+        final FlatSet flatSet = new FlatSet(backing);
+        flatSet.load(source);
+        flatSet.sort();
 
-        Assertions.assertEquals(-1, fileSet.search("notinfile"));
+        Assertions.assertEquals(-1, flatSet.search("notinfile"));
 
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
-                Assertions.assertNotEquals(-1, fileSet.search(line), () -> String.format("could not find line %s", line));
+                Assertions.assertNotEquals(-1, flatSet.search(line), () -> String.format("could not find line %s", line));
             });
         }
     }
@@ -43,15 +43,15 @@ class FileSetTest {
         final Path backing = Paths.get("target/tests/million-backing.txt");
         Files.createDirectories(backing.getParent());
 
-        final FileSet fileSet = new FileSet(backing);
-        fileSet.load(source);
-        fileSet.sort();
+        final FlatSet flatSet = new FlatSet(backing);
+        flatSet.load(source);
+        flatSet.sort();
 
-        Assertions.assertEquals(-1, fileSet.search("notinfile"));
+        Assertions.assertEquals(-1, flatSet.search("notinfile"));
 
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
-                Assertions.assertNotEquals(-1, fileSet.search(line), () -> String.format("could not find line %s", line));
+                Assertions.assertNotEquals(-1, flatSet.search(line), () -> String.format("could not find line %s", line));
             });
         }
     }
@@ -62,24 +62,24 @@ class FileSetTest {
         final Path backing = Paths.get("target/tests/thousand-add-backing.txt");
         Files.createDirectories(backing.getParent());
 
-        final FileSet fileSet = new FileSet(backing);
+        final FlatSet flatSet = new FlatSet(backing);
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
                 try {
-                    fileSet.add(line);
+                    flatSet.add(line);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             });
         }
 
-        fileSet.sort();
+        flatSet.sort();
 
-        Assertions.assertEquals(-1, fileSet.search("notinfile"));
+        Assertions.assertEquals(-1, flatSet.search("notinfile"));
 
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
-                Assertions.assertNotEquals(-1, fileSet.search(line), () -> String.format("could not find line %s", line));
+                Assertions.assertNotEquals(-1, flatSet.search(line), () -> String.format("could not find line %s", line));
             });
         }
     }
@@ -91,24 +91,24 @@ class FileSetTest {
         final Path backing = Paths.get("target/tests/million-add-backing.txt");
         Files.createDirectories(backing.getParent());
 
-        final FileSet fileSet = new FileSet(backing);
+        final FlatSet flatSet = new FlatSet(backing);
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
                 try {
-                    fileSet.add(line);
+                    flatSet.add(line);
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
             });
         }
 
-        fileSet.sort();
+        flatSet.sort();
 
-        Assertions.assertEquals(-1, fileSet.search("notinfile"));
+        Assertions.assertEquals(-1, flatSet.search("notinfile"));
 
         try(BufferedReader reader = Files.newBufferedReader(source)) {
             reader.lines().forEach(line -> {
-                Assertions.assertNotEquals(-1, fileSet.search(line), () -> String.format("could not find line %s", line));
+                Assertions.assertNotEquals(-1, flatSet.search(line), () -> String.format("could not find line %s", line));
             });
         }
     }

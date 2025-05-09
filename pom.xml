@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.chrisruffalo</groupId>
-    <artifactId>fileset</artifactId>
+    <artifactId>flatset</artifactId>
     <version>1.0-SNAPSHOT</version>
 
     <properties>

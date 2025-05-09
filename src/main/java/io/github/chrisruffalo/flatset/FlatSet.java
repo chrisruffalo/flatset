@@ -1,4 +1,4 @@
-package io.github.chrisruffalo.fileset;
+package io.github.chrisruffalo.flatset;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,7 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
-public class FileSet {
+public class FlatSet {
 
     static final int INITIAL_RECORD_SIZE = 20;
     static final int RECORD_SIZE_EXPANSION_AMOUNT = 4;
@@ -24,7 +24,7 @@ public class FileSet {
 
     final ThreadLocal<byte[]> pool = new ThreadLocal<>();
 
-    public FileSet(Path backing) {
+    public FlatSet(Path backing) {
         this.backing = backing;
         this.recordSize = INITIAL_RECORD_SIZE;
         if (Files.exists(backing)) {
